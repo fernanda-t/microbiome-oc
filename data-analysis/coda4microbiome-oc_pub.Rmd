@@ -1,0 +1,496 @@
+---
+title: "coda4microbiome-oc_pub"
+author: "Fernanda Terrazas"
+date: "`r Sys.Date()`"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+Set working directory
+```{r}
+# setwd("~/Documents/Programming/Microbiome/microbiome-ocp/data-analyses")
+
+```
+Load coda4microbiome package
+```{r Load Packages}
+library(coda4microbiome)
+
+```
+
+```{r}
+# to reproduce the results
+set.seed(123)
+
+```
+# 5. coda4microbiome - CH4 & H2 levels signatures in Control/Users
+Assign "group" with metadata subset
+```{r}
+# group <- map[!(map$SampleID %in% remove_outliers),]
+# group <- map[(map$SampleID %in% merged_hydro_meth_auc_map$SampleID),]
+
+# add H2 and CH4 AUC values to map data (use hydro_meth_df)
+group <- merge(map, hydro_meth_df[c("SampleID", "H2", "CH4")], by = "SampleID")
+head(group)
+
+```
+### Use group and complete.cases() to save CH4 and H2 columns that have data for all entries, then convert responses to binary
+```{r}
+### Convert breath AUC data to binary (high or low)
+### Calculate mean and categorize responses as high or low (above or below the mean)
+y_hydrogen <- subset(group, complete.cases(H2))
+# y_hydrogen$H2 <- sqrt(y_hydrogen$H2)
+mean_H2 <- mean(y_hydrogen$H2) # calculate the mean of H2
+y_hydrogen$b_H2 <- ifelse(y_hydrogen$H2 > mean_H2, "high", "low") # create a b_H2 column with high/low values for H2
+y_hydrogen_b <- y_hydrogen$b_H2
+
+y_methane <- subset(group, complete.cases(CH4))
+# y_methane$CH4 <- sqrt(y_methane$CH4)
+mean_CH4 <- mean(y_methane$CH4) # calculate the mean of CH4
+y_methane$b_CH4 <- ifelse(y_methane$CH4 > mean_CH4, "high", "low") # create a b_CH4 column with high/low values for CH4
+y_methane_b <- y_methane$b_CH4
+
+```
+### Run coda4microbiome algorithm
+##### **Hydrogen** AUC values between Control and Users
+```{r}
+### Balances for Hydrogen Level Differences
+
+### 1. Create a Transposed Data Frame. A transposed data frame x_species is created from the original data frame species.
+x_species <- data.frame(t(species), check.names = T)
+# subset asv/species/genus data to keep subgroup data
+# x_species <- x_species[row.names(x_species) %in% group$SampleID, ]
+x_species_hydro <- x_species[row.names(x_species) %in% y_hydrogen$SampleID, ]
+
+### 2. Factorize the Low/High levels of Hydrogen. Create a factor variable cu_vector_hydro by extracting the hydrogen information for 'Control' & 'User' subjects from the y_hydrogen(from group, from map) data.
+# 'Control' samples only
+# y_control_vector_hydro <- factor(y_hydrogen[(y_hydrogen$Treatment=="Control" ),]$b_H2)
+# 'User' samples only
+# y_user_vector_hydro <- factor(y_hydrogen[(y_hydrogen$Treatment=="User" ),]$b_H2)
+# All samples
+y_cu_vector_hydro <- factor(y_hydrogen$b_H2)
+
+### 3. Apply regression. Regression is applied using the coda_glmnet function to identify important taxa in explaining H2 level differences in 'Control' & 'User' subjects.
+# only take taxa over 10% contribution to variance
+coda_glmnet_hydro <- coda_glmnet(x = x_species_hydro, y = y_cu_vector_hydro, lambda = "lambda.min", nvar = NULL, alpha = 0.9, nfolds = 7, showPlots = TRUE, coef_threshold = 0)
+
+### 4. Extract Accuracy Measure. The apparent Area Under the Curve (AUC) is extracted as an accuracy measure from the regression results.
+coda_glmnet_hydro$`apparent AUC`
+coda_glmnet_hydro$`predictions plot`
+coda_glmnet_hydro$`signature plot`
+
+### 5. Create a Data Frame with Genera and Coefficients. A data frame coda_balance_coeff_hydro is created to store genera names and their corresponding coefficients from the regression
+coda_balance_coeff_hydro <- data.frame(cbind(coda_glmnet_hydro$`log-contrast coefficients`, coda_glmnet_hydro$taxa.name))
+
+### 6. Data Frame Manipulations
+# Set row names of the data frame coda_balance_coeff_hydroto be the taxa names obtained from the regression results
+rownames(coda_balance_coeff_hydro) <- coda_balance_coeff_hydro$taxa.name
+# Set column names of the data frame to "Coefficient_full" and "Species" for clarity.
+colnames(coda_balance_coeff_hydro) <- c("Coefficient_full", "Species")
+# Convert "Coefficient_full" column to numeric type, and create a new column "Coefficient" by rounding "Coefficient_full" to two decimal places
+coda_balance_coeff_hydro$Coefficient_full <- as.numeric(coda_balance_coeff_hydro$Coefficient_full)
+coda_balance_coeff_hydro$Coefficient <-as.numeric(format(round(coda_balance_coeff_hydro$Coefficient_full, 2), nsmall = 2))
+# Determine Positive or Negative Coefficients. Create "PosNeg" column based on whether the coefficient is positive or negative; contains the labels "Positive" or "Negative" accordingly.
+coda_balance_coeff_hydro$PosNeg <- with(coda_balance_coeff_hydro, ifelse(Coefficient > 0, "Positive", "Negative"))
+# Assign Group Labels. The "Group" column is assigned labels "High" or "Low" based on the "PosNeg" column. If the coefficient is positive, it is labeled as "Low"; otherwise, it is labeled as "High".
+coda_balance_coeff_hydro$Group <- with(coda_balance_coeff_hydro, ifelse(PosNeg == "Positive", "Low", "High"))
+
+### 7. Create Data Frame with Samples, Predictions, and Variables. A data frame coda_balances_hydro_predictions is created to store balance predictions along with sex, group, and sample type information
+coda_balances_hydro_predictions <- data.frame(coda_glmnet_hydro$predictions)
+colnames(coda_balances_hydro_predictions) <- c("Balance")
+coda_balances_hydro_predictions$H2_level <- y_cu_vector_hydro
+# coda_balances_hydro_predictions$Treatment <- factor(group[(group$Treatment=="Control"),]$Treatment)
+coda_balances_hydro_predictions$Treatment <- factor(group$Treatment)
+# coda_balances_hydro_predictions$Day <- factor(group[(group$Day=="Day 1" ),]$Day)
+coda_balances_hydro_predictions$Day <- factor(group$Day)
+
+### 8. Create Plots. The first one is a boxplot and scatter plot of microbial balances based on sex and group. The second one is a bar plot showing genera in the selected balance, filtered based on a coefficient threshold.
+# Graph Sample Balances and Species Coefficients (coeff > 0.099)
+
+# Species coefficient plot
+#plot only the genera that are at least 10% of the contribution to the balance
+coda_balance_coeff_hydro_10p <- coda_balance_coeff_hydro[(coda_balance_coeff_hydro$Coefficient >= 0.099 | coda_balance_coeff_hydro$Coefficient<= -0.099),]
+coda_balance_coeff_hydro_10p
+
+####
+#### simplify taxa names using simplify_taxa-names_count-tables.R
+####
+
+p_hydro_sample_genera_hydro <- ggplot(
+  data = coda_balance_coeff_hydro_10p, 
+  aes(x = reorder(Species, Coefficient), y = Coefficient)) +
+  geom_bar(stat="identity", width = 0.7, aes(color = Group, fill = Group), show.legend = FALSE) +
+  scale_color_manual(values = c("#F8766D","#00BFC4","#7CAE00","#C77CFF")) +
+  scale_fill_manual(values = c("#F8766D","#00BFC4","#7CAE00","#C77CFF")) +
+  theme_classic() +
+  labs(title = "Hydrogen") +
+  xlab(" ") + ylab("Log-contrast Coefficient") +
+  theme(text = element_text(size = 15))  +
+  theme(plot.title = element_text(size=16, hjust = 0.5)) +
+  coord_flip() 
+p_hydro_sample_genera_hydro
+
+# Balance prediction plot
+p_hydro_coda_sample_balances_hydro <- ggplot(data = coda_balances_hydro_predictions, aes(x = H2_level, y = Balance, color = H2_level)) +
+    geom_line() +
+#    geom_point() +
+    geom_boxplot() +
+    scale_color_manual(values = c("#F8766D","#00BFC4","#7CAE00","#C77CFF")) +
+  scale_fill_manual(values = c("#F8766D","#00BFC4","#7CAE00","#C77CFF")) +
+  theme_classic() +
+  labs(title = "",
+       color = "H2 Level") +
+  xlab(" ") + ylab("Balance Value") +
+  #facet_grid(~Day) +
+    theme(text = element_text(size = 15))  +
+  theme(plot.title = element_text(size = 16)) +
+  #theme(axis.text.x = element_text(angle = 90, hjust = 0.5)) +
+  #theme(axis.text.y = element_text(angle = 90, hjust = 0.5)) +
+  coord_flip() +
+  theme(legend.position = "none")  # This also removes the legend
+p_hydro_coda_sample_balances_hydro
+
+
+p_coda_glmnet_plots_hydro <- egg::ggarrange(p_hydro_sample_genera_hydro, p_hydro_coda_sample_balances_hydro, labels = c("", ""), 
+                         ncol = 1, nrow = 2, heights = c(1,0.25))
+as_ggplot(p_coda_glmnet_plots_hydro)
+
+```
+Save plot
+```{r}
+ggsave(filename = "~/Documents/Programming/Microbiome/microbiome-ocp/data-analyses/results/coda4microbiome-pub/p_coda_glmnet_plots_hydro.png", plot = p_coda_glmnet_plots_hydro, width = 5, height = 4, dpi = 300)
+```
+### Run coda4microbiome algorithm
+##### **Methane** AUC values between Control and Users
+```{r}
+### Balances for methane Level Differences
+
+### 1. Create a Transposed Data Frame. A transposed data frame x_species is created from the original data frame species.
+x_species <- data.frame(t(species), check.names = T)
+# subset asv/species/genus data to keep subgroup data
+# x_species <- x_species[row.names(x_species) %in% group$SampleID, ]
+x_species_meth <- x_species[row.names(x_species) %in% y_methane$SampleID, ]
+
+### 2. Factorize the Low/High levels of methane. Create a factor variable cu_vector_methby extracting the methane information for 'Control' & 'User' subjects from the y_methane(from group, from map) data.
+# 'Control' samples only
+# y_control_vector_meth<- factor(y_methane[(y_methane$Treatment=="Control" ),]$b_CH4)
+# 'User' samples only
+# y_user_vector_meth<- factor(y_methane[(y_methane$Treatment=="User" ),]$b_CH4)
+# All samples
+y_cu_vector_meth <- factor(y_methane$b_CH4)
+
+### 3. Apply regression. Regression is applied using the coda_glmnet function to identify important taxa in explaining CH4 level differences in 'Control' & 'User' subjects.
+# only take taxa over 10% contribution to variance
+coda_glmnet_meth <- coda_glmnet(x = x_species_meth, y = y_cu_vector_meth, lambda = "lambda.min", nvar = NULL, alpha = 0.9, nfolds = 7, showPlots = TRUE, coef_threshold = 0)
+
+### 4. Extract Accuracy Measure. The apparent Area Under the Curve (AUC) is extracted as an accuracy measure from the regression results.
+coda_glmnet_meth$`apparent AUC`
+coda_glmnet_meth$`predictions plot`
+coda_glmnet_meth$`signature plot`
+
+### 5. Create a Data Frame with Genera and Coefficients. A data frame coda_balance_coeff_methis created to store genera names and their corresponding coefficients from the regression
+coda_balance_coeff_meth <- data.frame(cbind(coda_glmnet_meth$`log-contrast coefficients`, coda_glmnet_meth$taxa.name))
+View(coda_balance_coeff_meth)
+
+### 6. Data Frame Manipulations
+# Set row names of the data frame coda_balance_coeff_methto be the taxa names obtained from the regression results
+rownames(coda_balance_coeff_meth) <- coda_balance_coeff_meth$taxa.name
+# Set column names of the data frame to "Coefficient_full" and "Species" for clarity.
+colnames(coda_balance_coeff_meth) <- c("Coefficient_full", "Species")
+# Convert "Coefficient_full" column to numeric type, and create a new column "Coefficient" by rounding "Coefficient_full" to two decimal places
+coda_balance_coeff_meth$Coefficient_full <- as.numeric(coda_balance_coeff_meth$Coefficient_full)
+coda_balance_coeff_meth$Coefficient <-as.numeric(format(round(coda_balance_coeff_meth$Coefficient_full, 2), nsmall = 2))
+# Determine Positive or Negative Coefficients. Create "PosNeg" column based on whether the coefficient is positive or negative; contains the labels "Positive" or "Negative" accordingly.
+coda_balance_coeff_meth$PosNeg <- with(coda_balance_coeff_meth, ifelse(Coefficient > 0, "Positive", "Negative"))
+# Assign Group Labels. The "Group" column is assigned labels "High" or "Low" based on the "PosNeg" column. If the coefficient is positive, it is labeled as "Low"; otherwise, it is labeled as "High".
+coda_balance_coeff_meth$Group <- with(coda_balance_coeff_meth, ifelse(PosNeg == "Positive", "Low", "High"))
+coda_balance_coeff_meth
+
+### 7. Create Data Frame with Samples, Predictions, and Variables. A data frame coda_balances_meth_predictions is created to store balance predictions along with sex, group, and sample type information
+coda_balances_meth_predictions <- data.frame(coda_glmnet_meth$predictions)
+colnames(coda_balances_meth_predictions) <- c("Balance")
+coda_balances_meth_predictions$CH4_level <- y_cu_vector_meth
+# coda_balances_meth_predictions$Treatment <- factor(group[(group$Treatment=="Control"),]$Treatment)
+coda_balances_meth_predictions$Treatment <- factor(group$Treatment)
+# coda_balances_meth_predictions$Day <- factor(group[(group$Day=="Day 1" ),]$Day)
+coda_balances_meth_predictions$Day <- factor(group$Day)
+coda_balances_meth_predictions
+
+### 8. Create Plots. The first one is a boxplot and scatter plot of microbial balances based on sex and group. The second one is a bar plot showing genera in the selected balance, filtered based on a coefficient threshold.
+# Graph Sample Balances and Species Coefficients (coeff > 0.099)
+
+# Species coefficient plot
+#plot only the genera that are at least 10% of the contribution to the balance
+coda_balance_coeff_meth_10p <- coda_balance_coeff_meth[(coda_balance_coeff_meth$Coefficient >= 0.099 | coda_balance_coeff_meth$Coefficient<= -0.099),]
+coda_balance_coeff_meth_10p
+
+####
+#### simplify taxa names using simplify_taxa-names_count-tables.R
+####
+
+p_meth_sample_genera_meth<- ggplot(
+  data = coda_balance_coeff_meth_10p, 
+  aes(x = reorder(Species, Coefficient), y = Coefficient)) +
+  geom_bar(stat="identity", width = 0.7, aes(color = Group, fill = Group), show.legend = FALSE) +
+  scale_color_manual(values = c("#F8766D","#00BFC4","#7CAE00","#C77CFF")) +
+  scale_fill_manual(values = c("#F8766D","#00BFC4","#7CAE00","#C77CFF")) +
+  theme_classic() +
+  labs(title = "Methane") +
+  xlab(" ") + ylab("Log-contrast Coefficient") +
+  theme(text = element_text(size = 15))  +
+  theme(plot.title = element_text(size=16, hjust = 0.5)) +
+  coord_flip() 
+p_meth_sample_genera_meth
+
+# Balance prediction plot
+p_meth_coda_sample_balances_meth<- ggplot(data = coda_balances_meth_predictions, aes(x = CH4_level, y = Balance, color = CH4_level)) +
+  geom_line() +
+#  geom_point() +
+  geom_boxplot() +
+  scale_color_manual(values = c("#F8766D","#00BFC4","#7CAE00","#C77CFF")) +
+  scale_fill_manual(values = c("#F8766D","#00BFC4","#7CAE00","#C77CFF")) +
+  theme_classic() +
+  labs(title = "",
+       color = "CH4 Level") +
+  xlab(" ") + ylab("Balance Value") +
+  #facet_grid(~Day) +
+  theme(text = element_text(size = 15))  +
+  theme(plot.title = element_text(size=16)) +
+  #theme(axis.text.x = element_text(angle = 90, hjust = 0.5)) +
+  #theme(axis.text.y = element_text(angle = 90, hjust = 0.5)) +
+  coord_flip() +
+  theme(legend.position = "none")
+p_meth_coda_sample_balances_meth
+
+
+p_coda_glmnet_plots_meth <- egg::ggarrange(p_meth_sample_genera_meth, p_meth_coda_sample_balances_meth, labels = c("", ""), 
+                                            ncol = 1, nrow = 2, heights = c(1,0.25))
+as_ggplot(p_coda_glmnet_plots_meth)
+
+```
+Save plot
+```{r}
+ggsave(filename = "~/Documents/Programming/Microbiome/microbiome-ocp/data-analyses/results/coda4microbiome-pub/p_coda_glmnet_plots_meth.png", plot = p_coda_glmnet_plots_meth, width = 5, height = 4, dpi = 300)
+
+```
+### Run coda4microbiome algorithm
+##### Microbial balances between Control and Users
+```{r}
+### Balances for Treatment Differences
+
+### 1. Create a Transposed Data Frame. A transposed data frame x_species is created from the original data frame species.
+x_species <- data.frame(t(species), check.names = T)
+# subset asv/species/genus data to keep subgroup data
+# x_species <- x_species[row.names(x_species) %in% group$SampleID, ]
+x_species_control_oc <- x_species[row.names(x_species) %in% group_control_oc$SampleID, ]
+
+### 2. Factorize the User/Control treatment groups. Create a factor variable cu_vector_control_oc by extracting treatment information for 'Control' & 'User' subjects from the y_control_oc(from group, from map) data.
+y_vector_control_oc <- factor(group_control_oc$Treatment)
+
+### 3. Apply regression. Regression is applied using the coda_glmnet function to identify important taxa in explaining CH4 level differences in 'Control' & 'User' subjects.
+# only take taxa over 10% contribution to variance
+coda_glmnet_control_oc <- coda_glmnet(x = x_species_control_oc, y = y_vector_control_oc, lambda = "lambda.min", nvar = NULL, alpha = 0.9, nfolds = 7, showPlots = TRUE, coef_threshold = 0)
+
+### 4. Extract Accuracy Measure. The apparent Area Under the Curve (AUC) is extracted as an accuracy measure from the regression results.
+coda_glmnet_control_oc$`apparent AUC`
+coda_glmnet_control_oc$`predictions plot`
+coda_glmnet_control_oc$`signature plot`
+
+### 5. Create a Data Frame with Genera and Coefficients. A data frame coda_balance_coeff_control_ocis created to store genera names and their corresponding coefficients from the regression
+coda_balance_coeff_control_oc <- data.frame(cbind(coda_glmnet_control_oc$`log-contrast coefficients`, coda_glmnet_control_oc$taxa.name))
+# view(coda_balance_coeff_control_oc)
+
+### 6. Data Frame Manipulations
+# Set row names of the data frame coda_balance_coeff_control_octo be the taxa names obtained from the regression results
+rownames(coda_balance_coeff_control_oc) <- coda_balance_coeff_control_oc$taxa.name
+# Set column names of the data frame to "Coefficient_full" and "Species" for clarity.
+colnames(coda_balance_coeff_control_oc) <- c("Coefficient_full", "Species")
+# Convert "Coefficient_full" column to numeric type, and create a new column "Coefficient" by rounding "Coefficient_full" to two decimal places
+coda_balance_coeff_control_oc$Coefficient_full <- as.numeric(coda_balance_coeff_control_oc$Coefficient_full)
+coda_balance_coeff_control_oc$Coefficient <-as.numeric(format(round(coda_balance_coeff_control_oc$Coefficient_full, 2), nsmall = 2))
+# Determine Positive or Negative Coefficients. Create "PosNeg" column based on whether the coefficient is positive or negative; contains the labels "Positive" or "Negative" accordingly.
+coda_balance_coeff_control_oc$PosNeg <- with(coda_balance_coeff_control_oc, ifelse(Coefficient > 0, "Positive", "Negative"))
+# Assign Group Labels. The "Group" column is assigned labels "High" or "Low" based on the "PosNeg" column. If the coefficient is positive, it is labeled as "Low"; otherwise, it is labeled as "High".
+coda_balance_coeff_control_oc$Group <- with(coda_balance_coeff_control_oc, ifelse(PosNeg == "Positive", "Low", "High"))
+coda_balance_coeff_control_oc
+
+### 7. Create Data Frame with Samples, Predictions, and Variables. A data frame coda_balances_control_oc_predictions is created to store balance predictions along with sex, group, and sample type information
+coda_balances_control_oc_predictions <- data.frame(coda_glmnet_control_oc$predictions)
+colnames(coda_balances_control_oc_predictions) <- c("Balance")
+coda_balances_control_oc_predictions$Treatment <- factor(group_control_oc$Treatment)
+coda_balances_control_oc_predictions$Day <- factor(group_control_oc$Day)
+coda_balances_control_oc_predictions
+
+### 8. Create Plots. The first one is a boxplot and scatter plot of microbial balances based on sex and group. The second one is a bar plot showing genera in the selected balance, filtered based on a coefficient threshold.
+# Graph Sample Balances and Species Coefficients (coeff > 0.099)
+
+# Species coefficient plot
+#plot only the genera that are at least 10% of the contribution to the balance
+coda_balance_coeff_control_oc_10p <- coda_balance_coeff_control_oc[(coda_balance_coeff_control_oc$Coefficient >= 0.099 | coda_balance_coeff_control_oc$Coefficient<= -0.099),]
+coda_balance_coeff_control_oc_10p
+
+####
+#### simplify taxa names using simplify_taxa-names_count-tables.R
+####
+
+coda_balance_coeff_control_oc_10p[7,2] <- "Eisenbergiella"
+
+p_control_oc_sample_genera_control_oc<- ggplot(
+  data = coda_balance_coeff_control_oc_10p, 
+  aes(x = reorder(Species, Coefficient), y = Coefficient)) +
+  geom_bar(stat="identity", width = 0.7, aes(color = Group, fill = Group), show.legend = FALSE) +
+  scale_color_manual(values = c("#E6A316", "#E066A6","#7CAE00","#C77CFF")) +
+  scale_fill_manual(values = c("#E6A316", "#E066A6","#7CAE00","#C77CFF")) +
+  theme_classic() +
+  labs(title = "Oral Contraceptives") +
+  xlab(" ") + ylab("Log-contrast Coefficient") +
+  theme(text = element_text(size = 15))  +
+  theme(plot.title = element_text(size=16, hjust = 0.5)) +
+  coord_flip() 
+p_control_oc_sample_genera_control_oc
+
+# Balance prediction plot
+p_control_oc_coda_sample_balances_control_oc<- ggplot(data = coda_balances_control_oc_predictions, aes(x = Treatment, y = Balance, color = Treatment)) +
+  geom_line() +
+#  geom_point() +
+  geom_boxplot() +
+  scale_color_manual(values = c("#E6A316", "#E066A6","#7CAE00","#C77CFF"),
+                     labels = c("Control", "OC User", "", "")) +
+  scale_fill_manual(values = c("#E6A316", "#E066A6","#7CAE00","#C77CFF")) +
+  scale_x_discrete(labels=c("User" = "OC User")) +
+  theme_classic() +
+  labs(title = "",
+       color = "Group") +  # Change legend title
+  xlab(" ") + ylab("Balance Value") +
+  #facet_grid(~Day) +
+  theme(text = element_text(size = 15))  +
+  theme(plot.title = element_text(size=16)) +
+  #theme(axis.text.x = element_text(angle = 90, hjust = 0.5)) +
+  #theme(axis.text.y = element_text(angle = 90, hjust = 0.5)) +
+  coord_flip() +
+  theme(legend.position = "none")
+p_control_oc_coda_sample_balances_control_oc
+
+p_coda_glmnet_plots_control_oc<- egg::ggarrange(p_control_oc_sample_genera_control_oc, p_control_oc_coda_sample_balances_control_oc, labels = c("", ""), 
+                                          ncol = 1, nrow = 2, heights = c(1,0.25))
+as_ggplot(p_coda_glmnet_plots_control_oc)
+
+```
+Save plot
+```{r}
+ggsave(filename = "~/Documents/Programming/Microbiome/microbiome-ocp/data-analyses/results/coda4microbiome-pub/p_coda_glmnet_plots_control_oc.png", plot = p_coda_glmnet_plots_control_oc, width = 5, height = 4, dpi = 300)
+
+```
+### Run coda4microbiome algorithm
+##### Microbial balances between *Outliers* and normal levels of H2 and CH4
+```{r}
+### Balances for Outliers vs. Normal Differences
+
+### 1. Create a Transposed Data Frame. A transposed data frame x_species is created from the original data frame species.
+x_species <- data.frame(t(species), check.names = T)
+# subset asv/species/genus data to keep subgroup data
+# x_species <- x_species[row.names(x_species) %in% group$SampleID, ]
+x_species_out_norm <- x_species[row.names(x_species) %in% group_control_oc$SampleID, ]
+
+### Create new data frame and add column 'Outliers' to categorize samples as Outlier or Normal (>print(outliers) for reference)
+group_out_norm <- group_control_oc
+group_out_norm$Outliers <- ifelse(group_out_norm$Subject %in% c(950, 962, 921, 735, 737), 'Outlier', 'Normal')
+# check
+group_out_norm
+
+### 2. Factorize the Outlier/Normal levels of gas. Create a factor variable cu_vector_control_oc by extracting the methane information for 'Control' & 'User' subjects from the y_control_oc(from group, from map) data.
+y_vector_out_norm <- factor(group_out_norm$Outliers)
+
+### 3. Apply regression. Regression is applied using the coda_glmnet function to identify important taxa in explaining CH4 level differences in 'Control' & 'User' subjects.
+# only take taxa over 10% contribution to variance
+coda_glmnet_out_norm <- coda_glmnet(x = x_species_out_norm, y = y_vector_out_norm, lambda = "lambda.min", nvar = NULL, alpha = 0.9, nfolds = 6, showPlots = TRUE, coef_threshold = 0)
+
+### 4. Extract Accuracy Measure. The apparent Area Under the Curve (AUC) is extracted as an accuracy measure from the regression results.
+coda_glmnet_out_norm$`apparent AUC`
+coda_glmnet_out_norm$`predictions plot`
+coda_glmnet_out_norm$`signature plot`
+
+### 5. Create a Data Frame with Genera and Coefficients. A data frame coda_balance_coeff_out_norm is created to store genera names and their corresponding coefficients from the regression
+coda_balance_coeff_out_norm <- data.frame(cbind(coda_glmnet_out_norm$`log-contrast coefficients`, coda_glmnet_out_norm$taxa.name))
+# View(coda_balance_coeff_out_norm)
+
+### 6. Data Frame Manipulations
+# Set row names of the data frame coda_balance_coeff_out_norm be the taxa names obtained from the regression results
+rownames(coda_balance_coeff_out_norm) <- coda_balance_coeff_out_norm$taxa.name
+# Set column names of the data frame to "Coefficient_full" and "Species" for clarity.
+colnames(coda_balance_coeff_out_norm) <- c("Coefficient_full", "Species")
+# Convert "Coefficient_full" column to numeric type, and create a new column "Coefficient" by rounding "Coefficient_full" to two decimal places
+coda_balance_coeff_out_norm$Coefficient_full <- as.numeric(coda_balance_coeff_out_norm$Coefficient_full)
+coda_balance_coeff_out_norm$Coefficient <-as.numeric(format(round(coda_balance_coeff_out_norm$Coefficient_full, 2), nsmall = 2))
+# Determine Positive or Negative Coefficients. Create "PosNeg" column based on whether the coefficient is positive or negative; contains the labels "Positive" or "Negative" accordingly.
+coda_balance_coeff_out_norm$PosNeg <- with(coda_balance_coeff_out_norm, ifelse(Coefficient > 0, "Positive", "Negative"))
+# Assign Group Labels. The "Group" column is assigned labels "High" or "Low" based on the "PosNeg" column. If the coefficient is positive, it is labeled as "Low"; otherwise, it is labeled as "High".
+coda_balance_coeff_out_norm$Group <- with(coda_balance_coeff_out_norm, ifelse(PosNeg == "Positive", "Low", "High"))
+coda_balance_coeff_out_norm
+
+### 7. Create Data Frame with Samples, Predictions, and Variables. A data frame coda_balances_control_oc_predictions is created to store balance predictions along with sex, group, and sample type information
+coda_balances_out_norm_predictions <- data.frame(coda_glmnet_out_norm$predictions)
+colnames(coda_balances_out_norm_predictions) <- c("Balance")
+coda_balances_out_norm_predictions$Treatment <- factor(group_out_norm$Treatment)
+coda_balances_out_norm_predictions$Day <- factor(group_out_norm$Day)
+coda_balances_out_norm_predictions$Outliers <- factor(group_out_norm$Outliers)
+
+### 8. Create Plots. The first one is a boxplot and scatter plot of microbial balances based on sex and group. The second one is a bar plot showing genera in the selected balance, filtered based on a coefficient threshold.
+# Graph Sample Balances and Species Coefficients (coeff > 0.099)
+
+# Species coefficient plot
+#plot only the genera that are at least 10% of the contribution to the balance
+coda_balance_coeff_out_norm_10p <- coda_balance_coeff_out_norm[(coda_balance_coeff_out_norm$Coefficient >= 0.099 | coda_balance_coeff_out_norm$Coefficient<= -0.099),]
+coda_balance_coeff_out_norm_10p
+
+####
+#### simplify taxa names using simplify_taxa-names_count-tables.R
+####
+
+p_control_oc_sample_genera_out_norm <- ggplot(
+  data = coda_balance_coeff_out_norm_10p, 
+  aes(x = reorder(Species, Coefficient), y = Coefficient)) +
+  geom_bar(stat="identity", width = 0.7, aes(color = Group, fill = Group), show.legend = FALSE) +
+  scale_color_manual(values = c("#7CAE00","#C77CFF","#F8766D","#00BFC4")) +
+  scale_fill_manual(values = c("#7CAE00","#C77CFF","#F8766D","#00BFC4")) +
+  theme_classic() +
+  labs(title = "Outliers") +
+  xlab(" ") + ylab("Log-contrast Coefficient") +
+  theme(text = element_text(size = 15))  +
+  theme(plot.title = element_text(size=16, hjust = 0.5)) +
+  coord_flip() 
+p_control_oc_sample_genera_out_norm
+
+# Balance prediction plot
+p_control_oc_coda_sample_balances_out_norm <- ggplot(data = coda_balances_out_norm_predictions, aes(x = Outliers, y = Balance, color = Outliers)) +
+  geom_line() +
+#  geom_point() +
+  geom_boxplot() +
+  scale_color_manual(values = c("#7CAE00","#C77CFF","#F8766D","#00BFC4"),
+                     labels = c("Normal", "Outlier", "", "")) +
+  scale_fill_manual(values = c("#7CAE00","#C77CFF","#F8766D","#00BFC4")) +
+  # scale_x_discrete(labels=c("User" = "OC User")) +
+  theme_classic() +
+  labs(title = "",
+       color = "Group") +  # Change legend title
+  xlab(" ") + ylab("Balance Value") +
+  #facet_grid(~Day) +
+  theme(text = element_text(size = 15))  +
+  theme(plot.title = element_text(size=16)) +
+  #theme(axis.text.x = element_text(angle = 90, hjust = 0.5)) +
+  #theme(axis.text.y = element_text(angle = 90, hjust = 0.5)) +
+  coord_flip() +
+  theme(legend.position = "none")
+p_control_oc_coda_sample_balances_out_norm
+
+p_coda_glmnet_plots_out_norm <- egg::ggarrange(p_control_oc_sample_genera_out_norm, p_control_oc_coda_sample_balances_out_norm, labels = c("", ""), 
+                                          ncol = 1, nrow = 2, heights = c(1,0.25))
+as_ggplot(p_coda_glmnet_plots_out_norm)
+
+```
+Save plot
+```{r}
+ggsave(filename = "~/Documents/Programming/Microbiome/microbiome-ocp/data-analyses/results/coda4microbiome-pub/p_coda_glmnet_plots_out_norm.png", plot = p_coda_glmnet_plots_out_norm, width = 5, height = 4, dpi = 300)
+
+```

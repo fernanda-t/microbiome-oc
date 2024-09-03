@@ -1,0 +1,123 @@
+---
+title: "Untitled"
+author: "Fernanda Terrazas"
+date: '`r Sys.Date()`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Linear Model -- Effect of **Treatment * Day** on Breath-H2 and -CH4 levels
+
+```{r}
+library(MuMIn)
+library(lme4)
+
+```
+Combine breath data for 1 and day 21 under one dataframe to look at 'Day' effect with same model
+```{r}
+#############################
+# USE df_log_breath??????????
+#############################
+
+# df_h2d1d21_data <- rbind(log_h2d1_auc, log_h2d21_auc)
+# df_ch4d1d21_data <- rbind(log_ch4d1_auc, log_ch4d21_auc)
+# 
+# # Check
+# head(df_h2d1d21_data)
+# tail(df_h2d1d21_data)
+# 
+# head(df_ch4d1d21_data)
+# tail(df_ch4d1d21_data)
+
+```
+Fit linear mixed effects model
+```{r}
+# Fit model for each H2 and CH4 levels, where Treatment is the group variable and 1|Subject specifies the random effect
+lmer_h2 <- lmer(df_log_breath$H2 ~ Treatment * Day + (1|Subject), data = df_log_breath)
+summary(lmer_h2)
+options(contrasts = c("contr.sum","contr.poly")) #change contrasts and refit model
+lmer_h2 <- lmer(df_log_breath$H2 ~ Treatment * Day + (1|Subject), data = df_log_breath)
+lmer_h2_anova <- Anova(lmer_h2, type = "III")
+lmer_h2_anova
+options(contrasts = c("contr.treatment","contr.poly")) #change contrasts back
+r.squaredGLMM(lmer_h2)
+
+lmer_ch4 <- lmer(df_log_breath$CH4 ~ Treatment * Day + (1|Subject), data = df_log_breath)
+summary(lmer_ch4)
+options(contrasts = c("contr.sum","contr.poly")) #change contrasts and refit model
+lmer_ch4 <- lmer(df_log_breath$CH4 ~ Treatment * Day + (1|Subject), data = df_log_breath)
+lmer_ch4_anova <- Anova(lmer_ch4, type = "III")
+lmer_ch4_anova
+options(contrasts = c("contr.treatment","contr.poly")) #change contrasts back
+r.squaredGLMM(lmer_ch4)
+
+
+# Graph predicted H2 and CH4 levels for each group (Users and Control) on each day (Day 1 and Day 21) to illustrate how the slopes (representing the effect of treatment) differ between Day 1 and Day 21, visually showing the interaction:
+# Create a new data frame for prediction
+new_data <- expand.grid(Treatment = factor(c("Control", "User"), 
+                                           levels = c("Control", "User")),
+                        Day = factor(c("Day 1", "Day 21"), 
+                                     levels = c("Day 1", "Day 21")))
+
+# Predict H2 levels from the model
+new_data$H2_predicted <- predict(lmer_h2, newdata = new_data, re.form = NA)  # re.form = NA excludes the random effects
+
+# Plotting
+ggplot(new_data, aes(x = Day, y = H2_predicted, color = Treatment)) +
+  geom_line(aes(group = Treatment), linewidth = 1) +  # Draws lines for each Treatment
+  geom_point(size = 2) +  # Adds points
+  labs(title = "Interaction between Treatment and Day on H2 Levels",
+       x = "Day", y = "Predicted H2 Level") +
+  theme_minimal() +
+  scale_color_manual(values = c("Control" = "blue", "User" = "red"))  # Customizes colors
+
+```
+### Check assumptions of the model **Treatment & Day**
+
+#### 1. Linearity - the relationship between the dependent variable and the fixed effects should be linear.
+                  - the relationship between predictors and the dependent variable is linear.
+```{r}
+par(mfrow = c(2, 2))
+
+plot(resid(lmer_h2))
+plot(resid(lmer_ch4))
+
+```
+#### 2. Homoscedasticity - the variance of residuals should be constant across the range of fitted values.
+                         - the residuals have constant variance.
+```{r}
+# Plot residuals vs. fitted values
+plot(resid(lmer_h2) ~ fitted(lmer_h2)) # or plot(lmer_h2)
+plot(lmer_h2)
+
+plot(resid(lmer_ch4) ~ fitted(lmer_h2)) # or plot(lmer_h2)
+plot(lmer_ch4)
+
+```
+#### Normality - the residuals of the model are normally distributed
+```{r}
+# id= identifies values that may be exerting undue influence on the model (i.e. outliers)
+qqmath(lmer_h2, id=0.05)
+qqmath(lmer_ch4, id=0.05)
+
+```
+#### 5. No multicollinearity - the predictor variables are not perfectly correlated with each other.
+
+A VIF greater than 4 often indicates problematic multicollinearity. In mixed models, you can calculate VIF (variance inflation factors) for the fixed effects only, because the random effects are assumed to be uncorrelated with the fixed effects and with each other:
+```{r}
+library(car)
+
+vif(lmer_h2)
+vif(lmer_ch4)
+
+```
+
+```{r}
+# Reset the mfrow parameter to default
+par(mfrow = c(1, 1))
+
+
+```
